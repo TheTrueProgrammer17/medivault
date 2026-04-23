@@ -1,34 +1,49 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { db } from '../firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function Emergency() {
-  const { userId } = useParams();
+  const { userId, memberId } = useParams();
   const { currentUser } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const isOwner = currentUser?.uid === userId;
+  const isOwner = currentUser?.uid === userId || (memberId && currentUser?.uid === memberId.split('_')[0]);
 
   useEffect(() => {
-    async function load() {
-      try {
-        const snap = await getDoc(doc(db, 'users', userId));
-        if (snap.exists()) {
-          setData(snap.data());
-        } else {
-          setError('No medical profile found for this ID.');
-        }
-      } catch (err) {
-        setError('Unable to load emergency data.');
+    if (!userId && !memberId) {
+      setTimeout(() => {
+        setError('Invalid profile link.');
+        setLoading(false);
+      }, 0);
+      return;
+    }
+    let docRef;
+    if (userId) {
+      docRef = doc(db, 'users', userId);
+    } else {
+      const familyId = memberId.split('_')[0];
+      docRef = doc(db, 'families', familyId, 'members', memberId);
+    }
+
+    const unsub = onSnapshot(docRef, (snap) => {
+      if (snap.exists()) {
+        setData(snap.data());
+        setError('');
+      } else {
+        setError('No medical profile found for this ID.');
       }
       setLoading(false);
-    }
-    load();
-  }, [userId]);
+    }, (err) => {
+      console.error('Emergency load error:', err);
+      setError('Unable to load emergency data.');
+      setLoading(false);
+    });
+    return () => unsub();
+  }, [userId, memberId]);
 
   if (loading) {
     return <div className="loading-page"><div className="spinner"></div><span>Loading emergency data...</span></div>;
@@ -46,6 +61,17 @@ export default function Emergency() {
     );
   }
 
+  // Extract medical info from nested structure, with fallback to top-level for backward compatibility
+  const medicalInfo = data.medicalInfo || {};
+  const bloodGroup = data.bloodGroup || medicalInfo.bloodGroup || 'Not specified';
+  const allergies = Array.isArray(data.allergies) ? data.allergies
+    : (Array.isArray(medicalInfo.allergies) ? medicalInfo.allergies : []);
+  const medicalConditions = Array.isArray(data.medicalConditions) ? data.medicalConditions
+    : (Array.isArray(medicalInfo.medicalConditions) ? medicalInfo.medicalConditions
+    : (Array.isArray(data.conditions) ? data.conditions : []));
+  const medications = data.medications || medicalInfo.medications || '';
+  const contacts = data.emergencyContacts || data.contacts || [];
+
   return (
     <div className="emergency-page">
       <div style={{ maxWidth: '540px', margin: '0 auto' }}>
@@ -56,27 +82,29 @@ export default function Emergency() {
           <p>Last updated: {data.updatedAt ? new Date(data.updatedAt).toLocaleDateString() : 'Unknown'}</p>
         </div>
 
-        {/* Blood Group */}
+        {/* Vital Information */}
         <div className="emergency-section fade-in fade-in-delay-1">
           <h2>🩸 Vital Information</h2>
           <div className="info-grid">
             <div className="info-item">
               <div className="label">Blood Group</div>
-              <div className="value blood">{data.bloodGroup || 'Not specified'}</div>
+              <div className="value blood">{bloodGroup}</div>
             </div>
-            <div className="info-item">
-              <div className="label">Conditions</div>
-              <div className="value">{data.conditions?.length ? data.conditions.join(', ') : 'None listed'}</div>
-            </div>
+            {medications && (
+              <div className="info-item">
+                <div className="label">Medications</div>
+                <div className="value">{medications}</div>
+              </div>
+            )}
           </div>
         </div>
 
         {/* Allergies */}
         <div className="emergency-section fade-in fade-in-delay-2">
           <h2>⚠️ Allergies</h2>
-          {data.allergies?.length ? (
+          {allergies.length > 0 ? (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-              {data.allergies.map((a, i) => (
+              {allergies.map((a, i) => (
                 <span key={i} className="tag tag-danger" style={{ fontSize: '0.9rem', padding: '8px 18px' }}>{a}</span>
               ))}
             </div>
@@ -85,11 +113,25 @@ export default function Emergency() {
           )}
         </div>
 
+        {/* Medical Conditions */}
+        <div className="emergency-section fade-in fade-in-delay-2">
+          <h2>🏥 Medical Conditions</h2>
+          {medicalConditions.length > 0 ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              {medicalConditions.map((c, i) => (
+                <span key={i} className="tag" style={{ fontSize: '0.9rem', padding: '8px 18px' }}>{c}</span>
+              ))}
+            </div>
+          ) : (
+            <div className="info-item"><div className="value">No known conditions</div></div>
+          )}
+        </div>
+
         {/* Emergency Contacts */}
         <div className="emergency-section fade-in fade-in-delay-3">
           <h2>📞 Emergency Contacts</h2>
-          {data.contacts?.length ? (
-            data.contacts.map((c, i) => (
+          {contacts.length ? (
+            contacts.map((c, i) => (
               <div key={i} className="contact-card">
                 <div className="contact-avatar">{c.name.charAt(0).toUpperCase()}</div>
                 <div className="contact-info">
